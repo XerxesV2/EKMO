@@ -4,15 +4,17 @@
 #include <iostream>
 #include <vector>
 #include <string>
-#include <map>
+#include <unordered_map>
+#include <thread>
 
-#include "DropDown.hpp"
-#include "MenuButton.hpp"
-#include "../SFML_adofai/KeyboardKey.hpp"
-#include "Animation.hpp"
-#include "json.hpp"
+#include "helpers/Singleton.hpp"
+#include "ui/DropDown.hpp"
+#include "ui/MenuButton.hpp"
+#include "ui/KeyboardKey.hpp"
+#include "helpers/Animation.hpp"
+#include "helpers/json.hpp"
 
-class CProgram
+class CProgram : public Singleton<CProgram>
 {
 public:
 	CProgram();
@@ -23,6 +25,8 @@ public:
 	CProgram& operator=(CProgram&) = delete;
 
 	void MainLoop();
+	void AddKeyFromCallback(unsigned long code);
+
 private:
 	void Update();
 	void Draw();
@@ -33,8 +37,10 @@ private:
 	void InitButtons();
 	void InitDropDown();
 	void UpdateDropDownOptions();
+	void StartKeyboardHookThread();
 
 	void AddKey(int ID);
+	void ArmCallbackThread();
 	void DeleteKey();
 	void DragAndPlaceKey(int index = -1);
 	void ApplyConfig();
@@ -55,6 +61,8 @@ private:
 	sf::Texture spriteTexture;
 	sf::Sprite spriteSheet;
 	sf::Music music;
+	std::thread th;
+	unsigned long codeToSet = 0ul;
 
 private:
 	std::vector<MenuButton> buttons;
@@ -76,9 +84,9 @@ private:
 	std::vector<KeyboardKey> keys;
 	std::vector<KeyboardKey> statKeys;
 	std::vector<KeyboardKey> mouseKeys;
-	std::map<int, bool> existingKeysLookup;
-	std::map<int, bool> existingStatKeysLookup;
-	std::map<int, bool> existingMouseButtonLookup;
+	std::unordered_map<int, bool> existingKeysLookup;
+	std::unordered_map<int, bool> existingStatKeysLookup;
+	std::unordered_map<int, bool> existingMouseButtonLookup;
 
 	sf::Text pressAkeyText;
 
@@ -94,6 +102,7 @@ private:
 	keyTypes selectedKeyType = KEY;
 	bool readyToPlaceStatKey = false;
 	bool needAutoSave = false;
+	bool keyExists = false;
 	//
 
 private:

@@ -1,0 +1,30 @@
+{
+    "Config_0": {
+        "changed": false,
+        "keylist": null,
+        "keys": null,
+        "mouseKeylist": null,
+        "mouseKeys": null,
+        "statKeylist": null,
+        "statKeys": null,
+        "windowSize": {
+            "x": 0,
+            "y": 0
+        }
+    },
+    "Config_1": {
+        "changed": true,
+        "keylist": null,
+        "keys": null,
+        "mouseKeylist": null,
+        "mouseKeys": null,
+        "statKeylist": null,
+        "statKeys": null,
+        "windowSize": {
+            "x": 0,
+            "y": 0
+        }
+    },
+    "configs": 2,
+    "currConfig": "Config_0"
+}

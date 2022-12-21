@@ -1,7 +1,6 @@
 #include "Program.hpp"
-#include <Windows.h>
-#include <thread>
 #include <math.h>
+#include <mutex>
 
 #include <Dwmapi.h>
 #pragma comment (lib, "Dwmapi.lib")
@@ -12,8 +11,31 @@
 #define WINDOWS_X 1920
 #define WINDOWS_Y 1080
 
-using namespace std::chrono_literals;
-constexpr std::chrono::nanoseconds timeStep(17ms);
+//using namespace std::chrono_literals;
+//constexpr std::chrono::nanoseconds timeStep(17ms);
+
+std::mutex mutex;
+HHOOK keyboardHook;
+LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+	PKBDLLHOOKSTRUCT key = (PKBDLLHOOKSTRUCT)lParam;
+
+	//a key was pressed
+	if (wParam == WM_KEYDOWN && nCode == HC_ACTION)
+	{
+		printf("\ndown: %d", key->vkCode);
+		Program::Get().HandleCallbackKeyDown(key->vkCode);
+	}
+
+	if (wParam == WM_KEYUP && nCode == HC_ACTION)
+	{
+		//printf("\nup: %c", key->vkCode);
+		Program::Get().HandleCallbackKeyUp(key->vkCode);
+	}
+
+	return CallNextHookEx(keyboardHook, nCode, wParam, lParam);
+}
+
 
 Program::Program() : window(sf::VideoMode(SCREEN_X / 2, SCREEN_Y / 2), "KadofaiK", sf::Style::None),
 view(sf::Vector2f(1920 / 2, 1080 / 2), sf::Vector2f(1920, 1080))
@@ -22,13 +44,14 @@ view(sf::Vector2f(1920 / 2, 1080 / 2), sf::Vector2f(1920, 1080))
 	this->font.loadFromFile("C:\\Windows\\Fonts\\Arial.ttf");
 	this->LoadConfig();
 	this->InitWindow();
-	
+
 	this->MakeWindowTransparent();
 	this->MakeWindowOnTop(this->window);
 
 	this->LoadStat();
 
-	
+	this->Draw();
+	//this->window.setActive(false);
 
 
 	/*offset.x = 80.f;
@@ -48,6 +71,8 @@ view(sf::Vector2f(1920 / 2, 1080 / 2), sf::Vector2f(1920, 1080))
 	this->startTime = this->avghitsTimer.getElapsedTime();
 	this->tick = this->avghitsTimer.getElapsedTime().asSeconds();
 	currentTime = std::chrono::high_resolution_clock::now();
+
+	this->StartKeyboardHookThread();
 }
 
 Program::~Program()
@@ -71,42 +96,36 @@ int GetFrameRate() {
 
 void Program::MainLoop()
 {
-	std::chrono::nanoseconds deltaTime(0ns);
 
 	while (this->window.isOpen())
 	{
-		deltaTime += std::chrono::high_resolution_clock::now() - currentTime;
-		currentTime = std::chrono::high_resolution_clock::now();
+		this->HandleEvents();
 
-		while (deltaTime > timeStep) {
-			this->HandleEvents();
-			
-			//this->window.clear();
+		//this->window.clear();
 
-			this->Update();
+		this->Update();
 
-			if (needReDraw) this->drawAFrame = true;	//this is baaaad
-			if (this->drawAFrame)
-				this->window.clear(sf::Color(0, 0, 0, 0));
-				//this->window.clear();
+		//if (needReDraw) this->drawAFrame = true;	//this is baaaad
+		//if (this->drawAFrame)
+			//this->window.clear(sf::Color(0, 0, 0, 0));
+		//this->window.clear();
 
-			this->HandleStats();
-			this->Draw();
+		//this->HandleStats();
+		//this->Draw();
 
-			//this->window.setTitle(std::to_string(GetFrameRate()));
+		//this->window.setTitle(std::to_string(GetFrameRate()));
 
-			//std::this_thread::sleep_for(std::chrono::microseconds(1000));
-			//std::cout << std::to_string(GetFrameRate()) << std::endl;
-			deltaTime -= timeStep;
-		}
-		std::this_thread::sleep_for(std::chrono::microseconds(1));
+		//std::this_thread::sleep_for(std::chrono::microseconds(1000));
+		//std::cout << std::to_string(GetFrameRate()) << std::endl;
+
 	}
+	this->th.detach();
 }
 
 void Program::Update()
 {
-	this->HandleKeyInputs();
-	//this->HandleStats();
+	this->HandleKeyQueues();
+	//this->HandleKeyInputs();	//old
 	this->ClickThrough();
 	this->MoveWindow();
 	this->ResizeWindow();
@@ -114,11 +133,11 @@ void Program::Update()
 
 void Program::Draw()
 {
-	if (!this->drawAFrame) return;
+	//if (!this->drawAFrame) return;
 
 	//this->window.clear(sf::Color(0,0,0,0));
-
 	//this->window.clear();
+
 	for (auto &k : this->keyList) {
 		this->keys[k]->Draw(this->window);
 	}
@@ -128,10 +147,10 @@ void Program::Draw()
 	}
 
 	//std::cout << "draw" << std::endl;
-	this->drawAFrame = false;
-	this->needReDraw = false;
+	//this->drawAFrame = false;
+	//this->needReDraw = false;
 
-	this->window.display();
+	//this->window.display();
 }
 
 void Program::HandleEvents()
@@ -148,6 +167,7 @@ void Program::HandleEvents()
 	}
 }
 
+/*old*/
 void Program::HandleKeyInputs()
 {
 	//-65
@@ -189,11 +209,79 @@ void Program::HandleKeyInputs()
 	}
 }
 
+void Program::HandleKeyQueues()
+{
+	this->window.clear(sf::Color(0, 0, 0, 0));
+
+	static std::map<int, int> repeatProtection;
+
+	for (auto& key : this->keyDownQueue) {
+		if (repeatProtection.find(key.first) != repeatProtection.end()) continue;
+		this->keys[key.first]->Update(this->window);
+		
+		++this->totalHits;
+		repeatProtection[key.first] = key.first;
+		
+		//std::cout << "key down: " << repeatProtection.size() << "\n";
+	}
+
+	for (auto& key : this->keyUpQueue) {
+		this->keys[key.first]->Released();
+		
+		this->keyUpQueue.erase(key.first);
+		this->keyDownQueue.erase(key.first);
+		repeatProtection.erase(key.first);
+
+		//std::cout << "key release: " << repeatProtection.size() << "\n";
+	}
+
+
+
+	//for (auto& key : this->keyDownQueue) {
+	//	this->keys[key.first]->Update(this->window);
+	//	if (prevCode != key.first) {
+	//		++this->totalHits;
+	//		prevCode = key.first;
+	//	}
+	//	this->keyDownQueue.erase(key.first);
+	//}
+
+	//int i = 0;
+	//for (auto& key : this->keyUpQueue) {
+	//	this->keys[key.first]->Released();
+	//	if (prevCode == key.first) //nedd fix (key repeat)
+	//		prevCode = 0;
+
+	//	this->keyUpQueue.erase(key.first);
+	//	++i;
+	//}
+	this->HandleStats();
+	this->Draw();
+	this->window.display();
+
+	//std::cout << "keyDownQueue: " << this->keyDownQueue.size() << std::endl;
+	//std::cout << "keyUpQueue: " << this->keyUpQueue.size() << std::endl;
+}
+
+void Program::HandleCallbackKeyDown(int code)
+{
+	if (!this->keys.count(code)) return;
+	const std::lock_guard<std::mutex> lock(mutex);
+	this->keyDownQueue[code] = code;
+}
+
+void Program::HandleCallbackKeyUp(int code)
+{
+	if (!this->keys.count(code)) return;
+	const std::lock_guard<std::mutex> lock(mutex);
+	this->keyUpQueue[code] = code;
+}
+
 void Program::HandleStats()
 {
 	if (this->statKeys.size() == 0) return;
 
-	static int prevTOT = this->totalHits;
+	static unsigned long long prevTOT = this->totalHits;
 
 	static constexpr int URATE = 10;
 	static int parts[URATE] = {0};
@@ -243,9 +331,24 @@ void Program::HandleStats()
 
 void Program::InitWindow()
 {
-	//this->window.setVerticalSyncEnabled(false);
-	//this->window.setFramerateLimit(60);
+	this->window.setVerticalSyncEnabled(false);
+	this->window.setFramerateLimit(60);
 	this->window.setPosition(sf::Vector2i(0, SCREEN_Y - window.getSize().y));
+}
+
+void Program::StartKeyboardHookThread()
+{
+	this->th = std::thread([]() {
+		printf("Hooking the keyboard\n");
+		//Here we set the low level hook
+		keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, 0, 0);
+		printf("%X\n", keyboardHook);
+		printf("\nthread %d\n", std::this_thread::get_id());
+
+		MSG msg{ 0 };
+
+		while (GetMessage(&msg, NULL, 0, 0) != 0);
+	});
 }
 
 void Program::HideConsole()
@@ -257,6 +360,13 @@ void Program::MakeWindowOnTop(sf::RenderWindow& window) {
 	HWND hwnd = window.getSystemHandle();
 	SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 	
+	//LONG retv;
+	//retv = SetWindowLong(hwnd, GWL_STYLE, WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED);
+	//COLORREF col = RGB(0, 0, 0);
+	//retv = SetLayeredWindowAttributes(hwnd, col, BYTE(255), LWA_COLORKEY);
+	//std::cout << retv << std::endl;
+	//std::cout << GetLastError() << std::endl;
+
 	/*LONG retv;
 	retv = SetWindowLongPtr(hwnd, GWL_STYLE, WS_EX_LAYERED | WS_EX_TRANSPARENT);
 	//retv = SetWindowLongPtr(hwnd, GWL_STYLE, WS_EX_COMPOSITED | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST);
@@ -279,7 +389,7 @@ void Program::MakeWindowTransparent()
 	DwmExtendFrameIntoClientArea(this->window.getSystemHandle(), &margins);
 }
 
-void Program::ClickThrough()
+void Program::ClickThrough()	//cant make this shit to happen so this is the temp solution
 {
 	if (sf::Keyboard::isKeyPressed(sf::Keyboard::LControl)) return;
 
@@ -531,7 +641,15 @@ void Program::LoadConfig()
 	std::ifstream input_file("save.json");
 
 	if (!input_file.good())
+	{
+		MessageBox(
+			NULL,
+			(LPCWSTR)L"Failed to load config file",
+			(LPCWSTR)L"Error",
+			MB_ICONERROR | MB_OK
+		);
 		abort();
+	}
 	input_file >> this->loadj;
 
 	std::string config = this->loadj["currConfig"].get<std::string>();
@@ -542,7 +660,7 @@ void Program::LoadConfig()
 
 	this->window.setSize(windowSize);
 	this->view.setSize(sf::Vector2f(windowSize));
-	this->view.setCenter(windowSize.x / 2, windowSize.y / 2);
+	this->view.setCenter(windowSize.x / 2.f, windowSize.y / 2.f);
 	
 	this->window.setView(this->view);
 
@@ -569,7 +687,7 @@ void Program::LoadConfig()
 
 		this->keys.insert({ this->keyList.back(), new KeyboardKey({ x, y }, {80.f, 80.f}, key, this->font) });
 
-		//this->keys.back().Released();
+		this->keys[this->keyList.back()]->Released();
 	}
 
 	// ------ stat keys -------//

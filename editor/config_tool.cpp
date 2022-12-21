@@ -2,6 +2,7 @@
 
 int main()
 {
-	CProgram program;
-	program.MainLoop();
+	CProgram::Get().MainLoop();
+
+	return EXIT_SUCCESS;
 }

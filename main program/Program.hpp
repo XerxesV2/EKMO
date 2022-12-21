@@ -1,25 +1,28 @@
 #pragma once
-#include "KeyboardKey.hpp"
-#include "json.hpp"
+#include "ui/KeyboardKey.hpp"
+#include "helpers/json.hpp"
+#include "helpers/Singleton.hpp"
 
 #include <SFML/Graphics.hpp>
 
 #include <iostream>
-#include <map>
+#include <unordered_map>
 #include <vector>
 #include <string>
 #include <fstream>
 #include <chrono>
+#include <thread>
+#include <Windows.h>
 
-class Program
+class Program : public Singleton<Program>
 {
 public:
 	Program();
 	~Program();
 
-	Program(Program&) = delete;
-	Program(Program&&) = delete;
-	Program& operator=(Program&) = delete;
+	//Program(Program&) = delete;
+	//Program(Program&&) = delete;
+	//Program& operator=(Program&) = delete;
 
 	void MainLoop();
 private:
@@ -27,9 +30,11 @@ private:
 	void Draw();
 	void HandleEvents();
 	void HandleKeyInputs();
+	void HandleKeyQueues();
 	void HandleStats();
 
 	void InitWindow();
+	void StartKeyboardHookThread();
 
 	void HideConsole();
 	void MakeWindowOnTop(sf::RenderWindow& window);
@@ -48,6 +53,10 @@ private:
 	void LoadConfig();
 	void UpdateJsonFlags();
 
+public:
+	void HandleCallbackKeyDown(int code);
+	void HandleCallbackKeyUp(int code);
+
 private:
 	//init list
 	sf::RenderWindow window;
@@ -60,8 +69,8 @@ private:
 	std::vector<bool> repeatProtection = { false };
 	std::vector<int> keyList;
 	std::vector<int> mouseKeyList;
-	std::map<int, KeyboardKey*> keys;
-	std::map<int, KeyboardKey*> mouseKeys;
+	std::unordered_map<int, KeyboardKey*> keys;
+	std::unordered_map<int, KeyboardKey*> mouseKeys;
 
 	//sf::Vector2f keySize = { 84.f, 135.f };
 	sf::Vector2f keySize = { 76.f, 76.f };
@@ -93,5 +102,9 @@ private:
 
 	// SFML pls fix
 	std::chrono::time_point<std::chrono::high_resolution_clock> currentTime;
+	
+	std::thread th;
+	std::unordered_map<int, int> keyDownQueue;
+	std::unordered_map<int, int> keyUpQueue;
 };
 

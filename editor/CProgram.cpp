@@ -1,9 +1,13 @@
 #include "CProgram.hpp"
 #include "Globals.hpp"
-#include "../SFML_adofai/KeyboardKey.cpp"
 
 #include <fstream>
 #include <limits>
+#include <mutex>
+#include <chrono>
+
+#include <Dwmapi.h>
+#pragma comment (lib, "Dwmapi.lib")
 
 #define SCREEN_X sf::VideoMode::getDesktopMode().width
 #define SCREEN_Y sf::VideoMode::getDesktopMode().height
@@ -11,6 +15,25 @@
 #define WINDOWS_X 1920
 #define WINDOWS_Y 1080
 
+static bool shouldListenForKey = false;
+
+std::mutex callbackMut;
+HHOOK keyboardHook;
+LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+	if(!shouldListenForKey) return CallNextHookEx(keyboardHook, nCode, wParam, lParam);
+
+	PKBDLLHOOKSTRUCT key = (PKBDLLHOOKSTRUCT)lParam;
+
+	//a key was pressed
+	if (wParam == WM_KEYDOWN && nCode == HC_ACTION)
+	{
+		//printf("\ndown: %d", key->vkCode);
+		CProgram::Get().AddKeyFromCallback(key->vkCode);
+	}
+
+	return CallNextHookEx(keyboardHook, nCode, wParam, lParam);
+}
 
 CProgram::CProgram() : 
 	window(sf::VideoMode(SCREEN_X / 2, SCREEN_Y / 2), "KadofaiKConfig", sf::Style::Close),
@@ -39,6 +62,8 @@ CProgram::CProgram() :
 	this->music.openFromFile("AbsoluteUninstaller.wav");
 	this->music.setVolume(10.f);
 	this->music.play();
+
+	this->StartKeyboardHookThread();
 }
 
 CProgram::~CProgram()
@@ -47,6 +72,7 @@ CProgram::~CProgram()
 	this->selectedConfig = this->configsDropDown_Options.size()-1;
 	this->keys.clear();
 	this->Save();
+	this->th.detach();
 }
 
 void CProgram::MainLoop()
@@ -64,12 +90,19 @@ void CProgram::Update()
 {
 	this->logoAnim->Update(0, 100.f, 1);
 
+	if (this->keyExists) {	//the callback is faster so we need this workaround
+		this->keys.back().SetKeyCode(this->codeToSet);
+		this->keyExists = false;
+	}
+
 	if (this->draggingKey) {
+		std::lock_guard<std::mutex> lock(callbackMut);
 		this->DragAndPlaceKey();
 		return;
 	}
 
 	if(this->repositionKey){
+		std::lock_guard<std::mutex> lock(callbackMut);
 		this->DragAndPlaceKey(this->repositionKeyIndex);
 	}
 
@@ -202,8 +235,16 @@ void CProgram::InitDropDown()
 
 	std::ifstream input_file("save.json");
 
-	if (!input_file.good())
+	if (!input_file.good()) 
+	{
+		MessageBox(
+			NULL,
+			(LPCWSTR)L"Failed to load config file",
+			(LPCWSTR)L"Error",
+			MB_ICONERROR | MB_OK
+		);
 		abort();
+	}
 	input_file >> this->savej;
 
 	int numOfConfigs = this->savej["configs"].get<int>();
@@ -229,6 +270,21 @@ void CProgram::UpdateDropDownOptions()
 	}
 }
 
+void CProgram::StartKeyboardHookThread()
+{
+	this->th = std::thread([]() {
+		printf("Hooking the keyboard\n");
+		//Here we set the low level hook
+		keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, 0, 0);
+		printf("%X\n", keyboardHook);
+		printf("\nthread %d\n", std::this_thread::get_id());
+
+		MSG msg{ 0 };
+
+		while (GetMessage(&msg, NULL, 0, 0) != 0);
+	});
+}
+
 void CProgram::AddKey(int ID)
 {
 	if (ID != 1) {
@@ -248,9 +304,8 @@ void CProgram::AddKey(int ID)
 		}
 		return;
 		
-	}
+	}else	this->ArmCallbackThread();
 
-	std::string pressedKey;
 	this->waitForPressAKey = true;
 
 	while (this->window.isOpen())
@@ -260,20 +315,29 @@ void CProgram::AddKey(int ID)
 			if (event.type == sf::Event::Closed)
 				window.close();
 
-			if (event.type == sf::Event::KeyPressed) {
-				pressedKey = (event.key.code + 65);
+			if (event.type == sf::Event::TextEntered) {	//and this secound
+				this->ArmCallbackThread();	//we can take advantage of it and arm the callback again if key already exists
+			}
+			if (event.type == sf::Event::KeyPressed) { //<--this called first
 				std::cout << "key: " << event.key.code << std::endl;
 				
 				if (!this->existingKeysLookup.count(event.key.code)) {
+
 					this->keys.push_back(KeyboardKey({ 0.f, 0.f }, { 80.f, 80.f }, this->SFKeyToString(event.key.code), this->font)); //65 ASCII code for A
-					this->keys.back().SetKeyCode(event.key.code);
-					this->keys.back().Released();
+					
+					/*this->keys.back().SetKeyCode(event.key.code);*/
 					this->existingKeysLookup[event.key.code] = true;
+					this->keys.back().SetSFMLKeyCode(event.key.code);
+					this->keys.back().Released();
 
 					this->draggingKey = true;
 					this->waitForPressAKey = false;
 					this->selectedKeyType = KEY;
 					this->needAutoSave = true;
+
+					std::lock_guard<std::mutex> lock(callbackMut);
+					this->keyExists = true;
+
 					return;
 				}
 			}
@@ -291,7 +355,7 @@ void CProgram::AddKey(int ID)
 
 				if (!this->existingMouseButtonLookup.count(event.mouseButton.button)) {
 					this->mouseKeys.push_back(KeyboardKey({ 0.f, 0.f }, { 80.f, 80.f }, getMouseKeyString(), this->font)); //65 ASCII code for A
-					this->mouseKeys.back().SetKeyCode(event.mouseButton.button);
+					this->mouseKeys.back().SetSFMLKeyCode(event.mouseButton.button);
 					this->mouseKeys.back().Released();
 					this->existingMouseButtonLookup[event.mouseButton.button] = true;
 
@@ -306,21 +370,38 @@ void CProgram::AddKey(int ID)
 
 		this->pressAkeyText.setPosition(GetCorrectedMousePos(this->window));
 		this->Draw();
+		this->logoAnim->Update(0, 100.f, 1);
 	}
+}
+
+void CProgram::AddKeyFromCallback(unsigned long code)
+{
+	std::lock_guard<std::mutex> lock(callbackMut);
+	std::cout << "key from callback: " << code << std::endl;
+
+	this->codeToSet = code;
+
+	shouldListenForKey = false;
+}
+
+void CProgram::ArmCallbackThread()
+{
+	shouldListenForKey = true;
 }
 
 void CProgram::DeleteKey()
 {
 	if (this->repositionKey) return;
 
+	std::lock_guard<std::mutex> lock(callbackMut);
 	if (sf::Keyboard::isKeyPressed(sf::Keyboard::Delete)) {
 		int i = 0;
 		for (KeyboardKey &key : this->keys) {
 			if (key.GetBounds().contains(GetCorrectedMousePos(this->window))) {
-				this->existingKeysLookup.erase(key.GetKeyCode());
+				this->existingKeysLookup.erase(key.GetSFMLKeyCode());
 				this->keys.erase(this->keys.begin() + i);
 
-				std::cout << "Key deleted..." << std::endl;
+		std::cout << "Key deleted..." << std::endl;
 			}
 			++i;
 		}
@@ -345,7 +426,7 @@ void CProgram::DeleteKey()
 		i = 0;
 		for (KeyboardKey &key : this->mouseKeys) {
 			if (key.GetBounds().contains(GetCorrectedMousePos(this->window))) {
-				this->existingMouseButtonLookup.erase(key.GetKeyCode());
+				this->existingMouseButtonLookup.erase(key.GetSFMLKeyCode());
 				this->mouseKeys.erase(this->mouseKeys.begin() + i);
 
 				std::cout << "MouseKey deleted..." << std::endl;
@@ -544,7 +625,8 @@ void CProgram::SaveKeysPos()
 		this->savej[config]["keys"][key.GetString()] = { {"x", keypos.x}, {"y", keypos.y},
 														 {"rx", rKeypos.x}, {"ry", rKeypos.y},
 														 {"w", key.GetBounds().width},  {"h", key.GetBounds().height},
-														 {"code", key.GetKeyCode() } };
+														 {"code", key.GetKeyCode() },
+														 {"sfml_code", key.GetSFMLKeyCode() } };
 	}
 }
 
@@ -581,7 +663,7 @@ void CProgram::SaveMouseKeysPos()
 		this->savej[config]["mouseKeys"][key.GetString()] = { {"x", key.GetPos().x}, {"y", key.GetPos().y},
 															 {"rx", rKeypos.x}, {"ry", rKeypos.y},
 															 {"w", key.GetBounds().width},  {"h", key.GetBounds().height},
-															 {"code", key.GetKeyCode() } };
+															 {"code", key.GetSFMLKeyCode() } };
 	}
 }
 
@@ -621,8 +703,10 @@ void CProgram::LoadKeysPos()
 		this->keys.push_back(KeyboardKey({ x, y }, { 80.f, 80.f }, key, this->font));
 		int keycode = this->savej[config]["keys"][key]["code"].get<int>();
 		this->keys.back().SetKeyCode(keycode);
+		int sfmlKeycode = this->savej[config]["keys"][key]["sfml_code"].get<int>();
+		this->keys.back().SetSFMLKeyCode(sfmlKeycode);
+		this->existingKeysLookup[sfmlKeycode] = true;
 		this->keys.back().Released();
-		this->existingKeysLookup[keycode] = true;
 	}
 
 	//std::string asd = this->savej[config]["keylist"][0].get<std::string>();
@@ -673,7 +757,7 @@ void CProgram::LoadMouseKeysPos()
 
 		this->mouseKeys.push_back(KeyboardKey({ x, y }, { 80.f, 80.f }, key, this->font));
 		int keycode = this->savej[config]["mouseKeys"][key]["code"].get<int>();
-		this->mouseKeys.back().SetKeyCode(keycode);
+		this->mouseKeys.back().SetSFMLKeyCode(keycode);
 		this->mouseKeys.back().Released();
 		this->existingMouseButtonLookup[keycode] = true;
 	}
